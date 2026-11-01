@@ -1,6 +1,6 @@
 /* ============================================================
    ARSIP PROPERTI — Logika tampilan (javascript.js)
-   Versi 4.3 — 1 November 2026
+   Versi 4.3 — 1 November 2026 (API_URL diarahkan ke akun Pak Pudji, 1 Nov 2026)
    Baru di 4.3 (hasil audit keamanan kedua): foto yang belum tersimpan dibuang dari HP
    saat sesi berakhir atau saat aplikasi dibuka tanpa tiket yang sah; KTP/NPWP disaring
    lagi tepat sebelum menu Bagikan dibuka (juga bila fotonya sudah ada di memori).
@@ -53,7 +53,7 @@
    Keduanya bukan rahasia, aman berada di GitHub.
    ════════════════════════════════════════════════════════════ */
 const CONFIG = {
-  API_URL: 'https://script.google.com/macros/s/AKfycbwYa-UFBjlxDMKryGSMEV9nHFQbNpO6o4zWSWc5RxAYgQbfJ166NQBF7TxjNOGSD8A/exec',
+  API_URL: 'https://script.google.com/macros/s/AKfycbxMBASZLZx3-dPuNZPYbdWJbAnhyCy1xMGJPkPF_DDUXKwQNbUlopcAckop_F-bSoLJpw/exec',
   GOOGLE_CLIENT_ID: '76556701841-t7gj13v1g4dvser39d2cs6e9f5qu2lbh.apps.googleusercontent.com',
   NAMA_PEMILIK: 'Pudji',      // nama agen, tampil di sapaan, layar masuk, dan pesan WhatsApp
   FOTO_SISI_MAKS: 1600,       // sisi terpanjang foto setelah dikecilkan (px)
