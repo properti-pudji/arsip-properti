@@ -1,13 +1,9 @@
 /* ============================================================
    ARSIP PROPERTI — Logika tampilan (javascript.js)
-   Versi 4.2 — 31 Oktober 2026
-   Baru di 4.2: tombol WhatsApp memakai logo resmi WhatsApp (berkas dari Meta
-   Brand Resource Center, dipakai apa adanya tanpa diubah warnanya); tulisan
-   tombol chat diperjelas jadi "di WhatsApp (tanpa foto)" supaya tidak terbaca SMS.
-   Versi 4.1 — 31 Oktober 2026
-   Baru di 4.1 (hasil audit keamanan): aplikasi menolak dibuka di dalam bingkai
-   situs lain, dan foto untuk dibagikan diminta dengan tanda khusus supaya
-   KTP/NPWP ikut ditolak server. Butuh Code.gs 2.1 untuk pagar servernya.
+   Versi 4.1 — 1 November 2026 (hasil audit keamanan):
+         foto yang belum tersimpan dibuang dari HP saat sesi berakhir;
+         foto untuk dibagikan diminta ke server dengan tanda "bagikan" (KTP/NPWP ditolak server),
+         dan KTP/NPWP disaring lagi tepat sebelum menu Bagikan dibuka.
    Versi 4.0 — 27 Oktober 2026
    Baru: harga jual/sewa, ukuran, sertifikat, komisi, Deal/Sold dengan pita,
          status pembeli + pencocokan otomatis, pengingat hubungi lagi,
@@ -17,32 +13,6 @@
    Butuh Code.gs versi 2.0.
    ============================================================ */
 'use strict';
-
-/* ════════════════════════════════════════════════════════════
-   PENOLAK BINGKAI (anti-clickjacking)
-   Situs lain bisa memuat aplikasi ini di dalam bingkai tak terlihat, lalu
-   memancing agen menekan tombol yang tidak dia maksud (misalnya Hapus).
-   GitHub Pages tidak bisa mengatur ini dari server, jadi dijaga di sini.
-   ════════════════════════════════════════════════════════════ */
-(function () {
-  let dibingkai = false;
-  try {
-    dibingkai = window.top !== window.self;
-  } catch (e) {
-    dibingkai = true;   // tidak boleh dibaca = memang beda situs
-  }
-  if (!dibingkai) return;
-  try { window.top.location = window.self.location; } catch (e) { /* diblokir, lanjut ke pesan */ }
-  document.addEventListener('DOMContentLoaded', function () {
-    document.body.textContent = '';
-    const p = document.createElement('p');
-    p.style.cssText = 'font:16px/1.6 sans-serif;padding:24px;text-align:center';
-    p.textContent = 'Aplikasi ini tidak bisa dibuka dari dalam halaman lain. Buka langsung dari ikon Arsip Properti di layar utama.';
-    document.body.appendChild(p);
-  });
-  // Hentikan sisa file supaya tidak ada data yang dimuat di dalam bingkai.
-  throw new Error('Dibuka di dalam bingkai: dihentikan.');
-})();
 
 /* ════════════════════════════════════════════════════════════
    CONFIG — SATU-SATUNYA TEMPAT ALAMAT DITULIS
@@ -194,23 +164,7 @@ function ikon(nama, kelas) {
 
 function tombol(kelas, ikonNama, teks, aksi, attr) {
   const props = Object.assign({ type: 'button', class: 'tombol ' + (kelas || ''), onclick: aksi }, attr || {});
-  const gbr = ikonNama instanceof Node ? ikonNama : (ikonNama ? ikon(ikonNama) : null);
-  return el('button', props, gbr, el('span', { text: teks }));
-}
-
-/**
- * Logo resmi WhatsApp (milik Meta), dari Brand Resource Center.
- * Berkasnya dipakai apa adanya, tidak diubah warna atau bentuknya, sesuai
- * aturan pakai merek mereka. Dua warna: putih untuk tombol hijau tua,
- * hijau untuk tombol berlatar terang.
- * alt sengaja kosong karena tulisan di sebelahnya sudah menyebut WhatsApp.
- */
-function ikonWa(warna, kelas) {
-  return el('img', {
-    src: warna === 'putih' ? './wa-putih.svg' : './wa-hijau.svg',
-    alt: '', width: '26', height: '26',
-    class: 'ikon-wa' + (kelas ? ' ' + kelas : '')
-  });
+  return el('button', props, ikonNama ? ikon(ikonNama) : null, el('span', { text: teks }));
 }
 
 /** "Lainnya: Gudang" tampil sebagai "Gudang". */
@@ -726,7 +680,7 @@ function rapiKalimat_(s) {
    PENYIMPANAN DI HP (IndexedDB)
    - "foto": foto yang belum tersimpan ke server, supaya tidak hilang bila aplikasi tertutup.
    - "mini": foto kecil properti untuk daftar.
-   Semua dibuang saat Keluar.
+   Semua dibuang saat Keluar, saat sesi berakhir, dan saat aplikasi dibuka tanpa tiket yang sah.
    ════════════════════════════════════════════════════════════ */
 
 let dbJanji = null;
@@ -837,13 +791,16 @@ async function panggil(aksi, data, opsi) {
 }
 
 function sesiBerakhir() {
-  // Foto yang belum tersimpan tetap ada di HP dan muncul lagi setelah masuk.
-  bersihkanSemua(false);
-  S.bannerBerikut = { jenis: 'waspada', judul: 'Sesi sudah berakhir', pesan: 'Demi keamanan, silakan masuk lagi.' };
+  // Demi keamanan (misalnya HP hilang lalu "Keluar dari semua HP" dari perangkat lain),
+  // foto yang belum tersimpan ikut dibuang dari HP. Foto bisa berisi KTP atau NPWP klien.
+  const n = jumlahFotoTertunda();
+  bersihkanSemua(true);
+  S.bannerBerikut = { jenis: 'waspada', judul: 'Sesi sudah berakhir',
+    pesan: 'Demi keamanan, silakan masuk lagi.' + (n ? ' ' + n + ' foto yang belum tersimpan sudah dibuang dari HP ini.' : '') };
   buka('masuk', {}, { ganti: true });
 }
 
-/** buangDiHp = true saat Keluar: foto tertunda dan foto kecil di HP ikut dibuang. */
+/** buangDiHp = true saat Keluar atau sesi berakhir: foto tertunda dan foto kecil di HP ikut dibuang. */
 function bersihkanSemua(buangDiHp) {
   tutupMemuat();
   if (S.tutupDialog) S.tutupDialog(null);
@@ -1166,16 +1123,13 @@ function serverLama() {
   return !v || String(v) < CONFIG.VERSI_SERVER_MIN;
 }
 
-/** Foto besar di memori (alamat + isi), diambil dari server setelah login. */
+/**
+ * Foto besar di memori (alamat + isi), diambil dari server setelah login.
+ * untuk = 'bagikan' saat foto disiapkan untuk dikirim ke pembeli: server menolak KTP dan NPWP.
+ */
 async function ambilFotoBesar(idDokumen, untuk) {
-  // Pagar pertama: KTP dan NPWP tidak pernah disiapkan untuk dibagikan,
-  // walaupun fotonya sudah pernah dibuka dan tersimpan di memori.
-  if (untuk === 'bagikan') {
-    const dk = cariDokumen(idDokumen);
-    if (dk && DOK_KLIEN.indexOf(dk.jenis) >= 0) throw new Error(dk.jenis + ' tidak boleh dibagikan.');
-  }
   if (S.urlFoto.has(idDokumen)) return S.urlFoto.get(idDokumen);
-  const j = await panggil('ambilFoto', { id_dokumen: idDokumen, untuk: untuk || '' });
+  const j = await panggil('ambilFoto', untuk ? { id_dokumen: idDokumen, untuk: untuk } : { id_dokumen: idDokumen });
   if (!j.ok) throw new Error(j.pesan || 'Foto tidak bisa dibuka.');
   const blob = base64KeBlob(j.data.gambar, j.data.mime || 'image/jpeg');
   const x = { url: URL.createObjectURL(blob), blob: blob };
@@ -1697,10 +1651,8 @@ function barisDok(x, saatAda, saatBelum) {
 
 /** Tombol WhatsApp kecil ke nomor klien, dengan teks awal (boleh kosong). */
 function tautanWa(hp, teks, kelas, label) {
-  // Tombol bergaris berlatar terang, selebihnya berlatar hijau tua.
-  const garis = String(kelas || '').indexOf('tombol-wa-garis') >= 0;
   return el('a', { class: 'tombol tombol-wa ' + (kelas || ''), href: 'https://wa.me/' + keWa(hp) + (teks ? '?text=' + encodeURIComponent(teks) : ''), target: '_blank', rel: 'noopener noreferrer' },
-    ikonWa(garis ? 'hijau' : 'putih'), el('span', { text: label || 'WhatsApp' }));
+    ikon('pesan'), el('span', { text: label || 'WhatsApp' }));
 }
 
 /* ════════════════════════════════════════════════════════════
@@ -2323,7 +2275,7 @@ function kartuCocokPembeli(k) {
     tambahAnak(kotak, [el('div', { class: 'daftar' }, h.cocok.map(function (pr) {
       return barisProperti(pr, function () { buka('properti', { id: pr.id_properti }); }, true);
     })),
-    el('div', { class: 'jarak-atas-kecil' }, tombol('tombol-wa', ikonWa('putih'), 'Kirim ke WhatsApp', function () {
+    el('div', { class: 'jarak-atas-kecil' }, tombol('tombol-wa', 'pesan', 'Kirim ke WhatsApp', function () {
       buka('bagikan', { ids: h.cocok.slice(0, 5).map(function (x) { return x.id_properti; }), untuk: k.id_klien });
     })),
     h.cocok.length > 5 ? el('p', { class: 'kecil redup', text: 'Yang dikirim 5 properti pertama. Untuk yang lain, buka propertinya lalu Bagikan.' }) : null]);
@@ -2435,7 +2387,7 @@ function layarProperti(isi, p) {
     pr.catatan ? infoBaris('catatan', 'Catatan', pr.catatan, 'pre-line') : null));
 
   isi.append(el('div', { class: 'tumpuk jarak-atas' },
-    tombol('tombol-wa', ikonWa('putih'), 'Bagikan ke pembeli (WhatsApp)', function () { buka('bagikan', { ids: [pr.id_properti] }); }),
+    tombol('tombol-wa', 'pesan', 'Bagikan ke pembeli (WhatsApp)', function () { buka('bagikan', { ids: [pr.id_properti] }); }),
     tombol('tombol-utama', 'pensil', 'Ubah Status atau Data', function () { buka('formProperti', { mode: 'ubah', id_klien: k.id_klien, id: pr.id_properti }); }),
     sedangDeal(pr) ? tombol('tombol-bahaya', 'ulang', 'Deal batal, pasarkan lagi', function () { dealBatal(pr, wb); }) : null));
 
@@ -2450,7 +2402,7 @@ function layarProperti(isi, p) {
             el('span', { class: 'judul', text: pk.nama }),
             el('span', { class: 'sub', text: 'Mencari: ' + kebutuhanTeks(pk) }),
             alasan ? el('span', { class: 'sub teks-aksen tebal', text: alasan }) : null),
-          el('span', { class: 'label-pil kirim' }, ikonWa('hijau', 'ikon-wa-kecil'), 'Kirim'));
+          el('span', { class: 'label-pil kirim' }, ikon('pesan', 'ikon-kecil'), 'Kirim'));
       };
       isi.append(el('section', { class: 'kartu kartu-hijau kartu-cocok jarak-atas' },
         el('h2', { class: 'judul-kartu' }, ikon('cocok'), h.cocok.length ? h.cocok.length + ' pembeli sedang mencari properti seperti ini' : 'Pembeli yang hampir cocok'),
@@ -3990,7 +3942,7 @@ function layarBagikan(isi, p) {
 
   const statusSiap = el('p', { class: 'kecil redup', 'aria-live': 'polite' });
   const kisi = el('div', { class: 'kisi-foto' });
-  const tombolKirim = tombol('tombol-wa', ikonWa('putih'), 'Kirim ke WhatsApp', kirim);
+  const tombolKirim = tombol('tombol-wa', 'pesan', 'Kirim ke WhatsApp', kirim);
   const wadahChat = el('div');
   const tombolSalin = tombol('tombol-kedua', 'salin', 'Salin teks saja', salin);
 
@@ -4057,7 +4009,7 @@ function layarBagikan(isi, p) {
   function segarkanChat() {
     kosongkan(wadahChat);
     const k = untuk();
-    if (k && k.no_hp) wadahChat.append(tautanWa(k.no_hp, teks.value, 'tombol-wa-garis', 'Chat ' + k.nama + ' di WhatsApp (tanpa foto)'));
+    if (k && k.no_hp) wadahChat.append(tautanWa(k.no_hp, teks.value, 'tombol-wa-garis', 'Chat ' + k.nama + ' (teks saja)'));
   }
 
   // Siapkan foto besar yang dipilih (diambil dari server), supaya tombol Kirim bisa langsung membuka menu Bagikan.
@@ -4086,7 +4038,9 @@ function layarBagikan(isi, p) {
 
   function berkasTerpilih() {
     const dipilih = semuaFoto.filter(function (x) { return x.pilih; }).concat(dokTambahan.filter(function (x) { return x.pilih; }));
-    return dipilih.filter(function (x) { return S.urlFoto.has(x.d.id_dokumen); }).map(function (x, i) {
+    // Gerbang terakhir: KTP dan NPWP tidak pernah ikut, walaupun fotonya sudah ada di memori
+    // (misalnya sudah pernah dibuka di layar Lihat Dokumen, sehingga tidak diminta ulang ke server).
+    return dipilih.filter(function (x) { return S.urlFoto.has(x.d.id_dokumen) && DOK_KLIEN.indexOf(x.d.jenis) < 0; }).map(function (x, i) {
       const nama = bersihkanNama(x.pr.nama_properti) + ' - ' + (x.d.judul || x.d.jenis) + ' ' + (i + 1) + '.jpg';
       return new File([S.urlFoto.get(x.d.id_dokumen).blob], nama, { type: 'image/jpeg' });
     });
@@ -4341,6 +4295,9 @@ function mulai() {
     });
   } else {
     S.tiket = null;
+    // Tidak ada tiket yang sah (misalnya sudah lewat 14 hari): sisa foto di HP ikut dibuang.
+    dbBuang('kv', 'foto');
+    dbKosongkan('mini');
     history.replaceState({ nama: 'masuk', param: {} }, '', '#masuk');
     tampilkan({ nama: 'masuk', param: {} });
   }
