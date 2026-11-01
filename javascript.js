@@ -1,5 +1,10 @@
 /* ============================================================
    ARSIP PROPERTI — Logika tampilan (javascript.js)
+   Versi 4.4 — 1 November 2026
+   Baru di 4.4: area dipecah jadi Area + Kota dengan saran otomatis dari daftar wilayah
+   baku (wilayah.json); pencocokan tiga tingkat (cocok, hampir cocok, alternatif di atas
+   budget); watermark logo Gading Pro + nama agen di tengah foto properti saat disimpan
+   (marka.png); foto di layar Bagikan tampil 2 kolom, 6 per halaman. Butuh Code.gs 2.3.
    Versi 4.3 — 1 November 2026 (API_URL diarahkan ke akun Pak Pudji, 1 Nov 2026)
    Baru di 4.3 (hasil audit keamanan kedua): foto yang belum tersimpan dibuang dari HP
    saat sesi berakhir atau saat aplikasi dibuka tanpa tiket yang sah; KTP/NPWP disaring
@@ -63,6 +68,10 @@ const CONFIG = {
   BATAS_WAKTU_UNGGAH_MS: 120000,
   BATAS_WAKTU_PDF_MS: 330000,
   PDF_MAKS_FOTO: 30,          // harus sama dengan PDF_MAKS_FOTO di Code.gs
+  BATAS_BUDGET_HAMPIR: 0.30,  // harga sampai 30% di atas budget = "hampir cocok"
+  BATAS_BUDGET_ALT: 0.60,     // 30% sampai 60% di atas budget = "alternatif"
+  MARKA_TEKS: 'Pudji',        // tulisan di bawah logo watermark foto properti
+  FOTO_PER_HALAMAN: 6,        // foto per halaman di layar Bagikan (2 kolom x 3 baris)
   VERSI_SERVER_MIN: '2.0'     // versi Code.gs yang dibutuhkan tampilan ini
 };
 
@@ -967,6 +976,57 @@ function daftarArea(dariProperti) {
   return Object.keys(ada).sort(function (a, b) { return norm(a).localeCompare(norm(b), 'id'); });
 }
 
+/* ── Wilayah: daftar kota dan area baku (wilayah.json), dimuat sekali saat dibutuhkan ── */
+const WILAYAH = { data: null, janji: null };
+/** Jabodetabek dan Bandung raya diurutkan lebih dulu di saran (nama yang sama ada di banyak daerah). */
+function wilayahUtama(kota) { return /^(Jakarta |Kab\. Bogor|Kota Bogor|Depok|Kab\. Tangerang|Kota Tangerang|Tangerang Selatan|Kab\. Bekasi|Kota Bekasi|Kota Bandung|Kab\. Bandung|Cimahi)/.test(kota) ? 1 : 2; }
+function muatWilayah() {
+  if (WILAYAH.janji) return WILAYAH.janji;
+  WILAYAH.janji = fetch('wilayah.json').then(function (r) { if (!r.ok) throw new Error('wilayah'); return r.json(); }).then(function (j) {
+    WILAYAH.data = {
+      kota: j.k.map(function (k) { return { n: k, nn: norm(k), p: wilayahUtama(k) }; }),
+      area: j.a.map(function (x) { return { n: x[0], k: j.k[x[1]], nn: norm(x[0]), p: wilayahUtama(j.k[x[1]]) }; })
+    };
+    return WILAYAH.data;
+  }).catch(function () { WILAYAH.janji = null; return null; });
+  return WILAYAH.janji;
+}
+
+/** "Kota Bogor" dan "Kab. Bogor" sama-sama "bogor": pembeli yang cari Bogor melihat keduanya. */
+function kunciKota(v) { return norm(v).replace(/^(kota administrasi|kabupaten administrasi|kota|kabupaten|kab\.?)\s+/, '').trim(); }
+/** "Bintaro, Jakarta Selatan" -> kotanya "Jakarta Selatan". Tanpa koma: seluruhnya dianggap kota. */
+function kotaDariArea(a) { const t = String(a || ''); const i = t.lastIndexOf(','); return (i < 0 ? t : t.slice(i + 1)).trim(); }
+function detailDariArea(a) { const t = String(a || ''); const i = t.lastIndexOf(','); return i < 0 ? '' : t.slice(0, i).trim(); }
+function gabungArea(detail, kota) { return detail && kota ? detail + ', ' + kota : (kota || detail || ''); }
+
+/** Saran: yang pernah dipakai dulu, lalu wilayah utama; diawali ketikan lebih dulu dari yang hanya mengandung kata itu. Maksimal 10. */
+function cariSaran(daftar, q, ambilNama) {
+  const nq = norm(q);
+  if (nq.length < 2) return [];
+  const awal = [], kata = [];
+  daftar.forEach(function (x) {
+    const nn = x.nn;
+    if (nn.indexOf(nq) === 0) awal.push(x);
+    else if ((' ' + nn).indexOf(' ' + nq) >= 0) kata.push(x);
+  });
+  const urut = function (a, b) { return ((a.p || 2) - (b.p || 2)) || a.nn.length - b.nn.length || a.nn.localeCompare(b.nn, 'id'); };
+  return awal.sort(urut).concat(kata.sort(urut)).slice(0, 10);
+}
+
+/** Area yang pernah diisi Pak Pudji sendiri ikut jadi saran (di urutan atas). */
+function areaPernah() {
+  const ada = {}, hasil = [];
+  daftarArea(false).forEach(function (a) {
+    const d = detailDariArea(a), k = kotaDariArea(a);
+    const n = d || k;
+    const kunci = norm(n) + '|' + norm(d ? k : '');
+    if (!n || ada[kunci]) return;
+    ada[kunci] = true;
+    hasil.push({ n: n, k: d ? k : '', nn: norm(n), p: 0.5 });
+  });
+  return hasil;
+}
+
 /** "Deal dengan Siti Rahma · 12 Okt 2026", "Terjual ke ...", atau "Laku lewat agen lain". */
 function dealKeterangan(pr) {
   const g = progresProp(pr);
@@ -1035,45 +1095,63 @@ function nilaiCocok(k, pr) {
   if (k.kebutuhan_jenis && jenisDasar(k.kebutuhan_jenis) !== jenisDasar(pr.jenis)) meleset.push('Jenisnya ' + namaJenis(pr.jenis));
   else if (k.kebutuhan_jenis && jenisDasar(k.kebutuhan_jenis) === 'Lainnya' && norm(namaJenis(k.kebutuhan_jenis)) !== norm(namaJenis(pr.jenis))) meleset.push('Jenisnya ' + namaJenis(pr.jenis));
   if (k.kebutuhan_kondisi && pr.kondisi && pr.kondisi !== k.kebutuhan_kondisi) meleset.push('Kondisinya ' + pr.kondisi.toLowerCase());
-  if (k.kebutuhan_area && norm(pr.area) !== norm(k.kebutuhan_area)) meleset.push(pr.area ? 'Beda area: ' + pr.area : 'Area belum diisi');
+  if (k.kebutuhan_area && kunciKota(kotaDariArea(pr.area)) !== kunciKota(kotaDariArea(k.kebutuhan_area))) meleset.push(pr.area ? 'Beda area: ' + pr.area : 'Area belum diisi');
+  let lebih = 0;
   if (k.budget) {
     const budget = Number(k.budget);
     let harga = 0;
     const sewa = k.kebutuhan_cara === 'Sewa' || (!k.kebutuhan_cara && !pr.dijual);
     if (sewa && pr.harga_sewa) harga = Number(pr.harga_sewa) * (pr.satuan_sewa === 'bulan' ? 12 : 1);
     else if (!sewa && pr.harga_jual) harga = Number(pr.harga_jual);
-    if (harga > budget) meleset.push('Lebih mahal ' + rupiahPendek(harga - budget) + (sewa ? '/thn' : '') + ' dari budget');
+    if (harga > budget) {
+      lebih = Math.round((harga / budget - 1) * 10000) / 10000;
+      if (lebih > CONFIG.BATAS_BUDGET_ALT) return null;   // terlalu jauh di atas budget: tidak ditampilkan
+      meleset.push('Lebih mahal ' + rupiahPendek(harga - budget) + (sewa ? '/thn' : '') + ' dari budget');
+    }
   }
-  return { meleset: meleset };
+  return { meleset: meleset, lebih: lebih, jauh: lebih > CONFIG.BATAS_BUDGET_HAMPIR };
 }
 
-/** Untuk satu pembeli: properti yang cocok semua, dan yang hanya meleset satu hal. */
+/** Golongan hasil nilaiCocok: 'cocok', 'hampir' (meleset satu hal), 'alt' (hanya harga 30-60% di atas budget). */
+function golongan(n) {
+  if (!n.meleset.length) return 'cocok';
+  if (n.meleset.length !== 1) return '';
+  return n.jauh ? 'alt' : 'hampir';
+}
+
+/** Untuk satu pembeli: properti yang cocok semua, hampir cocok, dan alternatif (agak di atas budget). */
 function propertiCocok(k) {
-  const hasil = { cocok: [], hampir: [] };
+  const hasil = { cocok: [], hampir: [], alt: [] };
   if (!punyaKebutuhan(k)) return hasil;
   S.data.properti.forEach(function (pr) {
     const n = nilaiCocok(k, pr);
     if (!n) return;
-    if (!n.meleset.length) hasil.cocok.push(pr);
-    else if (n.meleset.length === 1) hasil.hampir.push({ pr: pr, alasan: n.meleset[0] });
+    const g = golongan(n);
+    if (g === 'cocok') hasil.cocok.push(pr);
+    else if (g) hasil[g].push({ pr: pr, alasan: n.meleset[0], lebih: n.lebih });
   });
   hasil.cocok.sort(function (a, b) { return urutNama(a, b, 'nama_properti'); });
-  hasil.hampir = hasil.hampir.slice(0, 5);
+  const dekat = function (a, b) { return a.lebih - b.lebih; };
+  hasil.hampir = hasil.hampir.sort(dekat).slice(0, 5);
+  hasil.alt = hasil.alt.sort(dekat).slice(0, 5);
   return hasil;
 }
 
 /** Untuk satu properti: pembeli yang sedang mencari dan cocok. */
 function pembeliCocok(pr) {
-  const hasil = { cocok: [], hampir: [] };
+  const hasil = { cocok: [], hampir: [], alt: [] };
   S.data.klien.forEach(function (k) {
     if (k.peran !== 'Pembeli' || (k.status_beli || 'Mencari') !== 'Mencari' || !punyaKebutuhan(k)) return;
     const n = nilaiCocok(k, pr);
     if (!n) return;
-    if (!n.meleset.length) hasil.cocok.push(k);
-    else if (n.meleset.length === 1) hasil.hampir.push({ k: k, alasan: n.meleset[0] });
+    const g = golongan(n);
+    if (g === 'cocok') hasil.cocok.push(k);
+    else if (g) hasil[g].push({ k: k, alasan: n.meleset[0], lebih: n.lebih });
   });
   hasil.cocok.sort(function (a, b) { return urutNama(a, b, 'nama'); });
-  hasil.hampir = hasil.hampir.slice(0, 5);
+  const dekat = function (a, b) { return a.lebih - b.lebih; };
+  hasil.hampir = hasil.hampir.sort(dekat).slice(0, 5);
+  hasil.alt = hasil.alt.sort(dekat).slice(0, 5);
   return hasil;
 }
 
@@ -2343,6 +2421,15 @@ function kartuCocokPembeli(k) {
         return baris;
       })));
   }
+  if (h.alt.length) {
+    kotak.append(el('h3', { class: 'judul-kecil', text: 'Alternatif, agak di atas budget (' + h.alt.length + ')' }),
+      el('p', { class: 'kecil redup', text: 'Bisa ditawarkan, siapa tahu pembeli mau menambah budget.' }),
+      el('div', { class: 'daftar' }, h.alt.map(function (x) {
+        const baris = barisProperti(x.pr, function () { buka('properti', { id: x.pr.id_properti }); }, true);
+        baris.querySelector('.tengah').append(el('span', { class: 'sub teks-aksen tebal', text: x.alasan }));
+        return baris;
+      })));
+  }
   return kotak;
 }
 
@@ -2449,7 +2536,7 @@ function layarProperti(isi, p) {
   // Pembeli yang sedang mencari properti seperti ini
   if (dipasarkan(pr)) {
     const h = pembeliCocok(pr);
-    if (h.cocok.length || h.hampir.length) {
+    if (h.cocok.length || h.hampir.length || h.alt.length) {
       const baris = function (pk, alasan) {
         return el('button', { type: 'button', class: 'baris', onclick: function () { buka('bagikan', { ids: [pr.id_properti], untuk: pk.id_klien }); } },
           avatar(pk.nama),
@@ -2463,7 +2550,9 @@ function layarProperti(isi, p) {
         el('h2', { class: 'judul-kartu' }, ikon('cocok'), h.cocok.length ? h.cocok.length + ' pembeli sedang mencari properti seperti ini' : 'Pembeli yang hampir cocok'),
         h.cocok.length ? el('div', { class: 'daftar' }, h.cocok.map(function (x) { return baris(x, ''); })) : null,
         h.hampir.length ? el('h3', { class: 'judul-kecil', text: 'Hampir cocok (' + h.hampir.length + ')' }) : null,
-        h.hampir.length ? el('div', { class: 'daftar' }, h.hampir.map(function (x) { return baris(x.k, x.alasan); })) : null));
+        h.hampir.length ? el('div', { class: 'daftar' }, h.hampir.map(function (x) { return baris(x.k, x.alasan); })) : null,
+        h.alt.length ? el('h3', { class: 'judul-kecil', text: 'Alternatif, budget agak di bawah harga (' + h.alt.length + ')' }) : null,
+        h.alt.length ? el('div', { class: 'daftar' }, h.alt.map(function (x) { return baris(x.k, x.alasan); })) : null));
     }
   }
 
@@ -2630,6 +2719,75 @@ function layarFoto(isi, p) {
     if (terlalu) catatan.push('Paling banyak ' + FOTO_BATCH_MAKS + ' foto sekali simpan; ' + terlalu + ' foto tidak ikut.');
     if (catatan.length) S.bannerBerikut = { jenis: 'waspada', judul: 'Sebagian foto tidak diambil', pesan: catatan.join(' ') };
     buka('simpanFoto', { id_klien: k.id_klien, id_properti: pr ? pr.id_properti : '' });
+  }
+}
+
+/* ── Watermark foto properti: logo Gading Pro + nama agen, di tengah, samar tapi terbaca ── */
+const MARKA = { janji: null };
+function muatMarka() {
+  if (!MARKA.janji) {
+    MARKA.janji = new Promise(function (ok, gagal) {
+      const g = new Image();
+      g.onload = function () { ok(g); };
+      g.onerror = function () { MARKA.janji = null; gagal(new Error('marka')); };
+      g.src = 'marka.png';
+    });
+  }
+  return MARKA.janji;
+}
+
+/** Hanya untuk Foto properti, dipasang tepat sebelum dikirim. Hasil: base64 JPEG baru. */
+async function beriMarka(base64) {
+  const logo = await muatMarka();
+  const blob = base64KeBlob(base64, 'image/jpeg');
+  const gbr = new Image();
+  const url = URL.createObjectURL(blob);
+  try {
+    gbr.src = url;
+    await gbr.decode();
+    const W = gbr.naturalWidth, H = gbr.naturalHeight;
+    if (!W || !H) throw new Error('ukuran');
+    const kanvas = document.createElement('canvas');
+    kanvas.width = W;
+    kanvas.height = H;
+    const c = kanvas.getContext('2d');
+    c.drawImage(gbr, 0, 0, W, H);
+    const rasio = logo.height / logo.width;
+    const lw = Math.min(W * 0.4, H * 0.5 / rasio);
+    const lh = lw * rasio;
+    const fs = Math.round(lw * 0.24);
+    const gap = fs * 0.18;
+    const total = lh + gap + fs;
+    const x = (W - lw) / 2;
+    const y = (H - total) / 2;
+    // Logo: lingkar putih tipis di sekelilingnya supaya huruf hitamnya tetap terbaca di foto gelap.
+    c.save();
+    c.globalAlpha = 0.42;
+    c.shadowColor = 'rgba(255,255,255,1)';
+    c.shadowBlur = lw * 0.05;
+    c.drawImage(logo, x, y, lw, lh);
+    c.restore();
+    // Nama agen
+    c.save();
+    c.globalAlpha = 0.55;
+    c.font = '700 ' + fs + 'px "Segoe UI", Roboto, Arial, sans-serif';
+    c.textAlign = 'center';
+    c.textBaseline = 'top';
+    c.lineJoin = 'round';
+    c.lineWidth = fs * 0.08;
+    c.strokeStyle = 'rgba(0,0,0,0.4)';
+    c.fillStyle = '#ffffff';
+    c.strokeText(CONFIG.MARKA_TEKS, W / 2, y + lh + gap);
+    c.fillText(CONFIG.MARKA_TEKS, W / 2, y + lh + gap);
+    c.restore();
+    const hasil = await new Promise(function (ok, gagal) {
+      kanvas.toBlob(function (b) { if (b) ok(b); else gagal(new Error('toBlob')); }, 'image/jpeg', CONFIG.FOTO_KUALITAS);
+    });
+    kanvas.width = 0;
+    kanvas.height = 0;
+    return await blobKeBase64(hasil);
+  } finally {
+    URL.revokeObjectURL(url);
   }
 }
 
@@ -2881,11 +3039,21 @@ function layarSimpanFoto(isi, p) {
       tampilProgres(i + 1, total, 'menyimpan');
       it.terkunci = true;
       tandai(it);
+      let gambarKirim = it.base64;
+      if (it.jenis === 'Foto properti') {
+        try { gambarKirim = await beriMarka(it.base64); } catch (e0) {
+          // Lebih baik berhenti daripada mengirim foto properti tanpa watermark.
+          it.terkunci = false;
+          it.galat = 'Watermark belum terpasang. Tekan Simpan lagi.';
+          tandai(it);
+          continue;
+        }
+      }
       try {
         const jw = await panggil('unggahDokumen', {
           id_unggahan: it.idUnggahan, id_klien: f.id_klien,
           id_properti: DOK_KLIEN.indexOf(it.jenis) >= 0 ? '' : f.tujuan,
-          jenis: it.jenis, judul: it.jenis === 'Lainnya' ? it.judul : '', gambar: it.base64
+          jenis: it.jenis, judul: it.jenis === 'Lainnya' ? it.judul : '', gambar: gambarKirim
         }, { batas: CONFIG.BATAS_WAKTU_UNGGAH_MS });
         if (jw.ok) { berhasilSatu(it, jw.data.dokumen); dikirim++; continue; }
         // Server menolak dengan jelas: foto ini belum tersimpan, boleh diubah dan dicoba lagi.
@@ -3292,49 +3460,84 @@ function bidangAngka(id, label, satuan, nilai, desimal) {
   return b;
 }
 
-/** Pilih area dari daftar yang pernah diisi, atau ketik area baru (dengan saran "Maksudnya ...?"). */
-function bidangArea(id, label, keterangan, nilai) {
-  const daftar = daftarArea(false);
-  if (nilai && daftar.indexOf(nilai) < 0) daftar.push(nilai);
-  const pilih = el('select', { class: 'isian', id: id },
-    el('option', { value: '', text: 'Pilih area' }),
-    daftar.map(function (a) { return el('option', { value: a, text: a }); }),
-    el('option', { value: '__baru', text: '+ Area baru...' }));
-  pilih.value = nilai || '';
-  const baru = bidangTeks(id + 'Baru', 'Nama area baru', 'Wajib diketik', '', { autocomplete: 'off', autocapitalize: 'words', maxlength: '60', placeholder: 'Contoh: Depok, Bandung, Cimahi' });
-  baru.wadah.classList.add('tersembunyi', 'jarak-atas-kecil');
-  pasangRapi(baru.isian, function (v) { return rapiJudul_(v, false); });
-  const saran = el('div', { class: 'saran-area' });
-  baru.wadah.append(saran);
-  baru.isian.addEventListener('input', function () {
-    kosongkan(saran);
-    const ketik = norm(baru.isian.value);
-    if (ketik.length < 3) return;
-    const mirip = daftar.filter(function (a) {
-      const n = norm(a);
-      return n === ketik || n.indexOf(ketik) === 0 || ketik.indexOf(n) === 0 || jarakEjaan(n, ketik) <= (ketik.length >= 7 ? 2 : 1);
-    }).slice(0, 3);
-    mirip.forEach(function (a) {
-      saran.append(el('button', { type: 'button', class: 'tombol-saran', onclick: function () {
-        pilih.value = a;
-        baru.isian.value = '';
-        baru.wadah.classList.add('tersembunyi');
-        kosongkan(saran);
-        pilih.focus();
-      } }, 'Maksudnya ', el('strong', { text: a }), '?'));
+/** Isian dengan saran di bawahnya. cari(ketikan) -> daftar { n, k }; saatPilih(item) dipanggil saat saran diketuk. */
+function isianSaran(id, label, keterangan, nilai, placeholder, cari, saatPilih) {
+  const t = bidangTeks(id, label, keterangan, nilai, { autocomplete: 'off', autocapitalize: 'words', maxlength: '60', placeholder: placeholder });
+  pasangRapi(t.isian, function (v) { return rapiJudul_(v, false); });
+  const saran = el('div', { class: 'saran-wilayah' });
+  t.wadah.insertBefore(saran, t.wadah.querySelector('.pesan-salah'));
+  let nomor = 0;
+  function tampil() {
+    const ke = ++nomor;
+    const q = t.isian.value;
+    muatWilayah().then(function () {
+      if (ke !== nomor) return;
+      kosongkan(saran);
+      cari(q).forEach(function (x) {
+        saran.append(el('button', { type: 'button', class: 'saran-baris', onclick: function () {
+          nomor++;
+          kosongkan(saran);
+          saatPilih(x);
+        } }, el('strong', { text: x.n }), x.k ? el('span', { class: 'redup', text: x.k }) : null));
+      });
     });
+  }
+  t.isian.addEventListener('input', tampil);
+  t.isian.addEventListener('blur', function () { setTimeout(function () { nomor++; kosongkan(saran); }, 250); });
+  return t;
+}
+
+/**
+ * Area properti (penjual): "Area" (kelurahan, kecamatan, kompleks) + "Kota".
+ * Mengetik sebagian nama area memunculkan saran dari daftar wilayah baku; memilihnya mengisi kotanya.
+ * Pembeli (kotaSaja): cukup kota. Tersimpan sebagai "Area, Kota" atau "Kota".
+ */
+function bidangArea(id, label, keterangan, nilai, kotaSaja) {
+  muatWilayah();
+  const awalDetail = kotaSaja ? '' : detailDariArea(nilai);
+  const awalKota = kotaSaja ? kotaDariArea(nilai) : (nilai && nilai.indexOf(',') >= 0 ? kotaDariArea(nilai) : '');
+  const sendiri = (!kotaSaja && nilai && nilai.indexOf(',') < 0) ? nilai : '';   // data lama tanpa koma
+  let detail = null;
+  const sarankanKota = function (q) {
+    const pakai = daftarArea(false).map(function (a) { return kotaDariArea(a); }).filter(Boolean)
+      .filter(function (v, i, d) { return d.indexOf(v) === i; }).map(function (k) { return { n: k, nn: norm(k) }; });
+    const dasar = WILAYAH.data ? WILAYAH.data.kota : [];
+    const sudah = {};
+    return cariSaran(pakai.concat(dasar), q).filter(function (x) { if (sudah[x.nn]) return false; sudah[x.nn] = true; return true; });
+  };
+  const kota = isianSaran(id + 'Kota', kotaSaja ? label : 'Kota', kotaSaja ? keterangan : 'Pilih dari saran', awalKota,
+    'Contoh: Jakarta Selatan, Depok, Bogor', sarankanKota, function (x) { kota.isian.value = x.n; peringatan(); });
+  if (!kotaSaja) {
+    detail = isianSaran(id, label, keterangan, awalDetail || sendiri, 'Contoh: Bintaro, Bojongsari, Daan Mogot',
+      function (q) {
+        const dasar = WILAYAH.data ? WILAYAH.data.area : [];
+        return cariSaran(areaPernah().concat(dasar), q).filter(function (x, i, d) {
+          return d.findIndex(function (y) { return y.nn === x.nn && y.k === x.k; }) === i;
+        });
+      },
+      function (x) { detail.isian.value = x.n; if (x.k) kota.isian.value = x.k; peringatan(); });
+  }
+  const catatan = el('p', { class: 'kecil teks-aksen tersembunyi', text: 'Isi kotanya juga supaya bisa dicocokkan dengan pembeli.' });
+  function peringatan() { catatan.classList.toggle('tersembunyi', !(detail && detail.isian.value.trim() && !kota.isian.value.trim())); }
+  if (detail) { detail.isian.addEventListener('input', peringatan); kota.isian.addEventListener('input', peringatan); }
+  // Data lama tanpa koma yang ternyata nama kota: pindahkan ke kolom kota.
+  if (sendiri) muatWilayah().then(function (w) {
+    if (!w) return;
+    const kk = kunciKota(sendiri);
+    if (w.kota.some(function (k) { return kunciKota(k.n) === kk; }) && !kota.isian.value) { kota.isian.value = sendiri; detail.isian.value = ''; peringatan(); }
   });
-  pilih.addEventListener('change', function () {
-    const ya = pilih.value === '__baru';
-    baru.wadah.classList.toggle('tersembunyi', !ya);
-    if (ya) baru.isian.focus();
+  kota.isian.addEventListener('blur', function () {
+    const nn = norm(kota.isian.value);
+    const sama = WILAYAH.data && WILAYAH.data.kota.filter(function (k) { return k.nn === nn; })[0];
+    if (sama) kota.isian.value = sama.n;
   });
-  const wadah = el('div', { class: 'bidang' },
-    el('label', { class: 'label', for: id }, el('span', { text: label }), keterangan ? el('span', { class: 'keterangan', text: keterangan }) : null),
-    pilih, baru.wadah);
   return {
-    wadah: wadah,
-    nilai: function () { return pilih.value === '__baru' ? rapiJudul_(baru.isian.value, false) : pilih.value; }
+    wadah: el('div', { class: detail ? 'kotak-area' : '' }, detail ? detail.wadah : null, kota.wadah, catatan),
+    nilai: function () {
+      const d = detail ? rapiJudul_(detail.isian.value, false) : '';
+      const k = rapiJudul_(kota.isian.value, false);
+      return gabungArea(d, k);
+    }
   };
 }
 
@@ -3400,7 +3603,7 @@ function layarFormKlien(isi, p) {
     beliJenisLain.wadah.classList.toggle('tersembunyi', v !== 'Lainnya');
     if (v === 'Lainnya') beliJenisLain.isian.focus();
   }, true);
-  const beliArea = bidangArea('fBeliArea', 'Area yang dicari', 'Boleh kosong', ubah ? (k.kebutuhan_area || '') : '');
+  const beliArea = bidangArea('fBeliArea', 'Kota yang dicari', 'Boleh kosong', ubah ? (k.kebutuhan_area || '') : '', true);
   const budget = bidangRupiah('fBudget', ubah && k.kebutuhan_cara === 'Sewa' ? 'Budget sewa per tahun' : 'Budget sampai', 'Boleh kosong', ubah ? k.budget : '');
   const statusBeli = ubah ? grupPilihan('Status pembeli', '', STATUS_BELI, k.status_beli || 'Mencari', null, false, 'baris-3') : null;
   tambahAnak(kebutuhanKotak, [el('h2', { class: 'judul-kartu', text: 'Yang dicari pembeli' }),
@@ -3600,7 +3803,7 @@ function layarFormProperti(isi, p) {
     jenisLain.wadah.classList.toggle('tersembunyi', v !== 'Lainnya');
     if (v === 'Lainnya') jenisLain.isian.focus();
   });
-  const area = bidangArea('fArea', 'Area / Kota', 'Untuk penyaring', ubah ? (pr.area || '') : '');
+  const area = bidangArea('fArea', 'Area', 'Kelurahan atau kompleks', ubah ? (pr.area || '') : '');
   const kondisi = grupPilihan('Kondisi', 'Boleh kosong', KONDISI, ubah ? (pr.kondisi || null) : null, null, true);
 
   // Ditawarkan: Dijual dan/atau Disewakan, masing-masing dengan harganya.
@@ -4001,9 +4204,26 @@ function layarBagikan(isi, p) {
   const wadahChat = el('div');
   const tombolSalin = tombol('tombol-kedua', 'salin', 'Salin teks saja', salin);
 
+  let halamanFoto = 0;
+  const navFoto = el('div', { class: 'nav-foto tersembunyi' });
   function gambarKisi() {
     kosongkan(kisi);
-    semuaFoto.forEach(function (x, i) {
+    const per = CONFIG.FOTO_PER_HALAMAN;
+    const jumlahHal = Math.max(1, Math.ceil(semuaFoto.length / per));
+    halamanFoto = Math.min(halamanFoto, jumlahHal - 1);
+    const awal = halamanFoto * per;
+    kosongkan(navFoto);
+    navFoto.classList.toggle('tersembunyi', jumlahHal < 2);
+    if (jumlahHal > 1) {
+      navFoto.append(
+        tombol('tombol-kedua tombol-kecil', 'kiri', 'Sebelumnya', function () { halamanFoto--; gambarKisi(); }),
+        el('span', { class: 'kecil tebal tengah-teks', text: 'Hal. ' + (halamanFoto + 1) + ' dari ' + jumlahHal }),
+        tombol('tombol-kedua tombol-kecil', 'kanan', 'Berikutnya', function () { halamanFoto++; gambarKisi(); }));
+      navFoto.children[0].disabled = halamanFoto === 0;
+      navFoto.children[2].disabled = halamanFoto >= jumlahHal - 1;
+    }
+    semuaFoto.slice(awal, awal + per).forEach(function (x, j) {
+      const i = awal + j;
       const b = el('button', { type: 'button', class: 'ubin-foto', 'aria-pressed': x.pilih ? 'true' : 'false', 'aria-label': 'Foto ' + (i + 1) + ' ' + x.pr.nama_properti },
         ikon('gambar'), el('span', { class: 'centang-foto' }, ikon('centang')));
       pasangMini(b, x.d.id_dokumen);
@@ -4047,7 +4267,7 @@ function layarBagikan(isi, p) {
     el('p', { class: 'redup', text: props.length > 1 ? props.length + ' properti' : props[0].nama_properti }),
     el('div', { class: 'bidang jarak-atas-kecil' }, el('label', { class: 'label', for: 'bUntuk' }, el('span', { text: 'Untuk siapa?' }), el('span', { class: 'keterangan', text: 'Boleh kosong' })), selUntuk),
     judulBagian('Foto properti (' + semuaFoto.length + ')'),
-    semuaFoto.length ? kisi : el('p', { class: 'redup', text: 'Belum ada foto properti. Keterangan tetap bisa dikirim.' }),
+    semuaFoto.length ? el('div', {}, kisi, navFoto) : el('p', { class: 'redup', text: 'Belum ada foto properti. Keterangan tetap bisa dikirim.' }),
     dokTambahan.length ? judulBagian('Dokumen tambahan') : null,
     dokTambahan.length ? el('p', { class: 'kecil redup', text: 'Hanya bila penjual sudah setuju. KTP dan NPWP tidak pernah bisa dibagikan dari sini.' }) : null,
     daftarDok,
