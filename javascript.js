@@ -6841,7 +6841,7 @@ function teksCobroke(pr) {
   const isi = teksPromosi([pr], null).split('\n');
   isi[0] = 'Halo rekan agen, saya ' + CONFIG.IDENTITAS_WA + '. Ada listing berikut:';
   isi[isi.length - 1] = 'Kalau ada pembeli yang cocok, tolong kabari saya ya. Terima kasih.';
-  isi.push(CONFIG.NAMA_PEMILIK + ' - ' + CONFIG.NO_HP_PEMILIK);   // 5.15
+  isi.push(CONFIG.IDENTITAS_WA + ' - ' + CONFIG.NO_HP_PEMILIK);   // 5.15
   return isi.join('\n');
 }
 
@@ -6882,7 +6882,7 @@ function teksPromosi(props, untuk) {
     if (pr.sertifikat) baris.push('Sertifikat ' + namaJenis(pr.sertifikat));
     baris.push('');
   });
-  baris.push('Info dan jadwal survei hubungi ' + CONFIG.NAMA_PEMILIK + ' - ' + CONFIG.NO_HP_PEMILIK + '.');   // 5.15: + nomor HP
+  baris.push('Info dan jadwal survei hubungi ' + CONFIG.IDENTITAS_WA + ' - ' + CONFIG.NO_HP_PEMILIK + '.');   // 5.15: + nomor HP
   return baris.join('\n');
 }
 
